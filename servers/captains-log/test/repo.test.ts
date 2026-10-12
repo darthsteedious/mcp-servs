@@ -3,34 +3,62 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
+import Database from "better-sqlite3";
+import { V1_SCHEMA } from "../src/db.js";
 import { openDb } from "../src/db.js";
 import { buildReportData } from "../src/report.js";
 import { Repo } from "../src/repo.js";
 
 const mk = () => new Repo(openDb(":memory:"));
 
+describe("migrations", () => {
+  it("upgrades a v1 database, carrying jira links into issues", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "cl-mig-")), "v1.db");
+    // Build a real v1 DB: run only the first migration, then add a jira row.
+    const db = new Database(path);
+    db.exec(V1_SCHEMA);
+    db.pragma("user_version = 1");
+    db.prepare("INSERT INTO entries(id,created_at,updated_at,occurred_on,title,summary) VALUES ('e1','x','x','2026-01-01','t','s')").run();
+    db.prepare("INSERT INTO entry_jira(entry_id,key,role) VALUES ('e1','OLD-1','primary')").run();
+    db.close();
+
+    const upgraded = openDb(path);
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(2);
+    expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE name='entry_jira'").get()).toBeUndefined();
+    expect((new Repo(upgraded).get("e1") as any).issues).toEqual([
+      { tracker: "jira", key: "OLD-1", url: null, title: null, role: "primary" },
+    ]);
+  });
+});
+
 describe("repo", () => {
   it("creates and hydrates an entry", () => {
     const r = mk();
     const id = r.create({
       title: "Fix login", summary: "Fixed the login redirect loop", occurred_on: "2026-09-01", effort: "Auth",
-      jira: [{ key: "proj-1", role: "primary" }], tags: ["Bugfix"],
+      issues: [{ key: "PROJ-1", tracker: "Jira", url: "https://j/PROJ-1", role: "primary" }, { key: "#42" }], tags: ["Bugfix"],
       sources: [{ type: "github_pr", ref: "42", url: "https://x/42" }],
       usage: [{ input_tokens: 10, output_tokens: 5, cost_usd: 0.5, source: "reported" }],
     });
     const e = r.get(id) as any;
-    expect(e.jira).toEqual([{ key: "PROJ-1", role: "primary" }]);
+    expect(e.issues).toEqual([
+      { tracker: null, key: "#42", url: null, title: null, role: null },
+      { tracker: "jira", key: "PROJ-1", url: "https://j/PROJ-1", title: null, role: "primary" },
+    ]);
     expect(e.tags).toEqual(["bugfix"]);
     expect(e.sources[0]).toMatchObject({ type: "github_pr", ref: "42" });
     expect(e.usage[0].cost_usd).toBe(0.5);
   });
 
-  it("filters by range, jira and tag; searches via FTS safely", () => {
+  it("filters by range, issue and tag; searches via FTS safely", () => {
     const r = mk();
-    r.create({ title: "A", summary: "database migration work", occurred_on: "2026-09-01", jira: [{ key: "X-1" }], tags: ["db"] });
+    r.create({ title: "A", summary: "database migration work", occurred_on: "2026-09-01", issues: [{ key: "X-1", tracker: "linear" }], tags: ["db"] });
     r.create({ title: "B", summary: "frontend polish", occurred_on: "2026-09-10" });
     expect(r.list({ from: "2026-09-05" }).map((e: any) => e.title)).toEqual(["B"]);
-    expect(r.list({ jira: "x-1" })).toHaveLength(1);
+    expect(r.list({ issue: "x-1" })).toHaveLength(1);
+    expect(r.list({ issue: "x-1", tracker: "linear" })).toHaveLength(1);
+    expect(r.list({ issue: "x-1", tracker: "jira" })).toHaveLength(0);
+    expect(r.list({ tracker: "linear" })).toHaveLength(1);
     expect(r.list({ tag: "DB" })).toHaveLength(1);
     expect(r.search("migration")).toHaveLength(1);
     expect(r.search('"weird AND (query')).toEqual([]); // operators are quoted, no throw

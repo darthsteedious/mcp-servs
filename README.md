@@ -12,7 +12,7 @@ npm install && npm run build && npm test
 
 ## captains-log
 
-Stores one entry per unit of work (usually one agent thread): detailed summary, effort, JIRA keys, tags, outcome, time estimates, token/cost usage, and free-form **sources**. Sources are anything that fed the work (tickets, PRs, chats, docs, meetings), gathered by the skill from whatever tools the agent has connected. The server doesn't integrate with those systems itself.
+Stores one entry per unit of work (usually one agent thread): detailed summary, effort, issues (links to tickets in any tracker), tags, outcome, time estimates, token/cost usage, and free-form **sources**. Sources are anything that fed the work (tickets, PRs, chats, docs, meetings), gathered by the skill from whatever tools the agent has connected. The server doesn't integrate with those systems itself.
 
 DB: `~/.captains-log/captains-log.db` (override with `CAPTAINS_LOG_DB`). It uses WAL mode with a busy timeout, so several stdio processes plus the HTTP daemon can share it.
 

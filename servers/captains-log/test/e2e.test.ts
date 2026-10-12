@@ -35,14 +35,15 @@ describe("e2e: stdio + http share one DB", () => {
 
     try {
       expect((await stdio.listTools()).tools.map((t) => t.name)).toContain("log_entry");
-      await stdio.callTool({ name: "log_entry", arguments: { title: "via stdio", summary: "s", occurred_on: "2026-09-01", jira: [{ key: "A-1" }] } });
+      await stdio.callTool({ name: "log_entry", arguments: { title: "via stdio", summary: "s", occurred_on: "2026-09-01", issues: [{ key: "A-1", tracker: "Jira", title: "Fix it" }] } });
       await web.callTool({ name: "log_entry", arguments: { title: "via http", summary: "s", occurred_on: "2026-09-02" } });
 
       const fromWeb = JSON.parse(text(await web.callTool({ name: "list_entries", arguments: {} })));
       expect(fromWeb.map((e: any) => e.title)).toEqual(["via stdio", "via http"]);
-      const rep = JSON.parse(text(await stdio.callTool({ name: "get_report_data", arguments: { to: "2026-09-30", group_by: "jira" } })));
+      const rep = JSON.parse(text(await stdio.callTool({ name: "get_report_data", arguments: { to: "2026-09-30", group_by: "issue" } })));
       expect(rep.totals.entries).toBe(2);
-      expect(rep.jira_keys).toEqual(["A-1"]);
+      expect(rep.issues).toEqual([{ tracker: "jira", key: "A-1", title: "Fix it", url: null }]);
+      expect(rep.groups.map((g: any) => g.key).sort()).toEqual(["(no issue)", "jira:A-1"]);
 
       const bad = await stdio.callTool({ name: "get_entry", arguments: { id: "nope" } });
       expect(bad.isError).toBe(true);

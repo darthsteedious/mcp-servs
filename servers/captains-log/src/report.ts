@@ -1,6 +1,6 @@
 import { Repo, today, type Filters } from "./repo.js";
 
-export type GroupBy = "effort" | "jira" | "tag" | "month" | "project";
+export type GroupBy = "effort" | "issue" | "tag" | "month" | "project";
 
 type Entry = Record<string, any>;
 
@@ -36,13 +36,15 @@ function totals(entries: Entry[]) {
   };
 }
 
+const issueLabel = (i: Entry) => (i.tracker ? `${i.tracker}:${i.key}` : String(i.key));
+
 function keysFor(e: Entry, by: GroupBy): string[] {
   switch (by) {
     case "effort": return [e.effort ?? "(no effort)"];
     case "project": return [e.project ?? "(no project)"];
     case "month": return [String(e.occurred_on).slice(0, 7)];
     case "tag": return e.tags.length ? e.tags : ["(untagged)"];
-    case "jira": return e.jira.length ? e.jira.map((j: Entry) => j.key) : ["(no JIRA)"];
+    case "issue": return e.issues.length ? e.issues.map(issueLabel) : ["(no issue)"];
   }
 }
 
@@ -52,12 +54,19 @@ export function buildReportData(repo: Repo, opts: { from?: string; to?: string; 
   const by = opts.group_by ?? "effort";
   const groups = new Map<string, Entry[]>();
   for (const e of entries) for (const k of keysFor(e, by)) (groups.get(k) ?? groups.set(k, []).get(k)!).push(e);
-  // A multi-valued grouping (jira/tag) counts an entry once per group, so group totals can exceed overall totals.
+  // A multi-valued grouping (issue/tag) counts an entry once per group, so group totals can exceed overall totals.
   const grouped = [...groups.entries()]
     .map(([key, es]) => ({ key, totals: totals(es), entry_ids: es.map((e) => e.id) }))
     .sort((a, b) => b.totals.entries - a.totals.entries || a.key.localeCompare(b.key));
   const outcomes: Record<string, number> = {};
   for (const e of entries) outcomes[e.outcome ?? "unspecified"] = (outcomes[e.outcome ?? "unspecified"] ?? 0) + 1;
-  const jiraKeys = [...new Set(entries.flatMap((e) => e.jira.map((j: Entry) => j.key as string)))].sort();
-  return { range, group_by: by, totals: totals(entries), outcomes, jira_keys: jiraKeys, groups: grouped, entries };
+  // Distinct issues across the range; fill title/url from whichever entry has them.
+  const issueMap = new Map<string, Entry>();
+  for (const i of entries.flatMap((e) => e.issues as Entry[])) {
+    const k = issueLabel(i);
+    const cur = issueMap.get(k);
+    issueMap.set(k, { tracker: i.tracker, key: i.key, title: cur?.title ?? i.title, url: cur?.url ?? i.url });
+  }
+  const issues = [...issueMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v);
+  return { range, group_by: by, totals: totals(entries), outcomes, issues, groups: grouped, entries };
 }

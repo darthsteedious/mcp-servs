@@ -9,9 +9,8 @@ export function defaultDbPath(): string {
   return process.env.CAPTAINS_LOG_DB ?? join(homedir(), ".captains-log", "captains-log.db");
 }
 
-const MIGRATIONS: string[] = [
-  // v1
-  `
+/** Exported so tests can build a genuine v1 database. */
+export const V1_SCHEMA = `
   CREATE TABLE entries (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -43,7 +42,7 @@ const MIGRATIONS: string[] = [
   CREATE TABLE entry_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-    type TEXT NOT NULL,                  -- free-form: jira, github_pr, slack, doc, email, meeting, file, ...
+    type TEXT NOT NULL,                  -- free-form: pr, chat, doc, email, meeting, file, commit, ticket, ...
     ref TEXT,
     url TEXT,
     title TEXT,
@@ -79,6 +78,24 @@ const MIGRATIONS: string[] = [
   );
 
   CREATE VIRTUAL TABLE entries_fts USING fts5(entry_id UNINDEXED, title, summary, effort);
+  `;
+
+const MIGRATIONS: string[] = [
+  V1_SCHEMA,
+  // v2: tracker-agnostic issue links replace the Jira-only table.
+  `
+  CREATE TABLE entry_issues (
+    entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    tracker TEXT NOT NULL DEFAULT '',    -- free-form: jira, linear, github, gitlab, servicenow, asana, ... ('' = unspecified)
+    key TEXT NOT NULL,                   -- the tracker's own identifier: PROJ-123, #456, INC0012345, ...
+    url TEXT,
+    title TEXT,
+    role TEXT,                           -- e.g. primary, related, blocked-by
+    PRIMARY KEY (entry_id, tracker, key)
+  );
+  CREATE INDEX idx_entry_issues_key ON entry_issues(key);
+  INSERT INTO entry_issues(entry_id, tracker, key, role) SELECT entry_id, 'jira', key, role FROM entry_jira;
+  DROP TABLE entry_jira;
   `,
 ];
 

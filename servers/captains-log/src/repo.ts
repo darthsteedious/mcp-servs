@@ -16,8 +16,12 @@ export interface UsageInput {
   cost_usd?: number;
   source?: "reported" | "estimated";
 }
-export interface JiraInput {
+/** A link to a work item in any tracker. `tracker` is free-form (jira, linear, github, servicenow, ...). */
+export interface IssueInput {
   key: string;
+  tracker?: string;
+  url?: string;
+  title?: string;
   role?: string;
 }
 export interface EntryInput {
@@ -33,7 +37,7 @@ export interface EntryInput {
   session_ref?: string;
   project?: string;
   metadata?: Record<string, unknown>;
-  jira?: JiraInput[];
+  issues?: IssueInput[];
   tags?: string[];
   sources?: SourceInput[];
   usage?: UsageInput[];
@@ -44,7 +48,8 @@ export interface Filters {
   from?: string;
   to?: string;
   effort?: string;
-  jira?: string;
+  issue?: string;
+  tracker?: string;
   tag?: string;
   project?: string;
   limit?: number;
@@ -59,10 +64,13 @@ export class Repo {
   private writeChildren(id: string, e: EntryPatch, replace: boolean): void {
     const db = this.db;
     const del = (t: string) => db.prepare(`DELETE FROM ${t} WHERE entry_id = ?`).run(id);
-    if (e.jira) {
-      if (replace) del("entry_jira");
-      const ins = db.prepare("INSERT OR REPLACE INTO entry_jira(entry_id, key, role) VALUES (?,?,?)");
-      for (const j of e.jira) ins.run(id, j.key.toUpperCase(), j.role ?? null);
+    if (e.issues) {
+      if (replace) del("entry_issues");
+      const ins = db.prepare(
+        "INSERT OR REPLACE INTO entry_issues(entry_id, tracker, key, url, title, role) VALUES (?,?,?,?,?,?)",
+      );
+      for (const i of e.issues)
+        ins.run(id, (i.tracker ?? "").trim().toLowerCase(), i.key.trim(), i.url ?? null, i.title ?? null, i.role ?? null);
     }
     if (e.tags) {
       if (replace) del("entry_tags");
@@ -122,7 +130,7 @@ export class Repo {
     return id;
   }
 
-  /** Scalar fields are patched; child collections (jira/tags/sources/usage), when provided, replace the existing set. */
+  /** Scalar fields are patched; child collections (issues/tags/sources/usage), when provided, replace the existing set. */
   update(id: string, p: EntryPatch): boolean {
     const scalar = [
       "occurred_on", "title", "summary", "effort", "outcome", "time_spent_min", "time_saved_min",
@@ -170,14 +178,16 @@ export class Repo {
       const { entry_id: _e, id: _i, ...rest } = r;
       return rest;
     };
-    const jira = group<any>("SELECT entry_id, key, role FROM entry_jira WHERE entry_id IN (%IDS%) ORDER BY key");
+    const issues = group<any>(
+      "SELECT entry_id, tracker, key, url, title, role FROM entry_issues WHERE entry_id IN (%IDS%) ORDER BY tracker, key",
+    );
     const tags = group<any>("SELECT entry_id, tag FROM entry_tags WHERE entry_id IN (%IDS%) ORDER BY tag");
     const sources = group<any>("SELECT * FROM entry_sources WHERE entry_id IN (%IDS%) ORDER BY id");
     const usage = group<any>("SELECT * FROM usage WHERE entry_id IN (%IDS%) ORDER BY id");
     return rows.map((r) => ({
       ...r,
       metadata: r.metadata ? JSON.parse(r.metadata as string) : null,
-      jira: (jira.get(r.id as string) ?? []).map(strip),
+      issues: (issues.get(r.id as string) ?? []).map((i: any) => ({ ...strip(i), tracker: i.tracker || null })),
       tags: (tags.get(r.id as string) ?? []).map((t: any) => t.tag),
       sources: (sources.get(r.id as string) ?? []).map(strip),
       usage: (usage.get(r.id as string) ?? []).map(strip),
@@ -191,7 +201,12 @@ export class Repo {
     if (f.to) { c.push(`${alias}.occurred_on <= ?`); p.push(f.to); }
     if (f.effort) { c.push(`${alias}.effort = ? COLLATE NOCASE`); p.push(f.effort); }
     if (f.project) { c.push(`${alias}.project = ? COLLATE NOCASE`); p.push(f.project); }
-    if (f.jira) { c.push(`EXISTS (SELECT 1 FROM entry_jira j WHERE j.entry_id = ${alias}.id AND j.key = ?)`); p.push(f.jira.toUpperCase()); }
+    if (f.issue || f.tracker) {
+      const q: string[] = [];
+      if (f.issue) { q.push("i.key = ? COLLATE NOCASE"); p.push(f.issue); }
+      if (f.tracker) { q.push("i.tracker = ?"); p.push(f.tracker.toLowerCase()); }
+      c.push(`EXISTS (SELECT 1 FROM entry_issues i WHERE i.entry_id = ${alias}.id AND ${q.join(" AND ")})`);
+    }
     if (f.tag) { c.push(`EXISTS (SELECT 1 FROM entry_tags t WHERE t.entry_id = ${alias}.id AND t.tag = ?)`); p.push(f.tag.toLowerCase()); }
     return { sql: c.length ? " AND " + c.join(" AND ") : "", params: p };
   }

@@ -9,9 +9,15 @@ import { Repo } from "./repo.js";
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 
-const jira = z.object({ key: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*-\d+$/, "e.g. PROJ-123"), role: z.string().optional().describe("e.g. primary, related, blocked-by") });
+const issue = z.object({
+  key: z.string().min(1).describe("The tracker's own identifier, as written there: PROJ-123, #456, INC0012345, ENG-7, ..."),
+  tracker: z.string().optional().describe("Free-form system name: jira, linear, github, gitlab, servicenow, asana, ... Omit if unknown."),
+  url: z.string().optional(),
+  title: z.string().optional().describe("The issue's title, if known"),
+  role: z.string().optional().describe("e.g. primary, related, blocked-by"),
+});
 const source = z.object({
-  type: z.string().describe("Free-form kind of input: jira, github_pr, slack, doc, email, meeting, file, ..."),
+  type: z.string().describe("Free-form kind of input: pr, chat, doc, email, meeting, file, commit, ticket, ..."),
   ref: z.string().optional().describe("Identifier within that system (ticket key, PR number, message id)"),
   url: z.string().optional(),
   title: z.string().optional(),
@@ -40,7 +46,7 @@ const entryShape = {
   session_ref: z.string().optional().describe("Thread/session identifier if available"),
   project: z.string().optional().describe("Repo or project name"),
   metadata: z.record(z.unknown()).optional().describe("Anything else worth keeping"),
-  jira: z.array(jira).optional(),
+  issues: z.array(issue).optional().describe("Work items (tickets, issues, stories) this work relates to, from any tracker"),
   tags: z.array(z.string()).optional(),
   sources: z.array(source).optional(),
   usage: z.array(usage).optional(),
@@ -50,7 +56,8 @@ const filterShape = {
   from: date.optional(),
   to: date.optional(),
   effort: z.string().optional(),
-  jira: z.string().optional().describe("Only entries linked to this JIRA key"),
+  issue: z.string().optional().describe("Only entries linked to this issue key"),
+  tracker: z.string().optional().describe("Narrow `issue` (or all issues) to one tracker, e.g. jira"),
   tag: z.string().optional(),
   project: z.string().optional(),
   limit: z.number().int().positive().max(5000).optional(),
@@ -78,7 +85,7 @@ export function createServer(db: Db): McpServer {
   server.registerTool(
     "update_entry",
     {
-      description: "Patch an entry. Scalar fields are patched; jira/tags/sources/usage, when provided, REPLACE the existing set.",
+      description: "Patch an entry. Scalar fields are patched; issues/tags/sources/usage, when provided, REPLACE the existing set.",
       inputSchema: { id: z.string(), ...Object.fromEntries(Object.entries(entryShape).map(([k, v]) => [k, (v as z.ZodTypeAny).optional()])) },
     },
     async ({ id, ...patch }) => (repo.update(id, patch as any) ? json({ id, updated: true }) : fail(`No entry ${id}`)),
@@ -86,13 +93,13 @@ export function createServer(db: Db): McpServer {
 
   server.registerTool(
     "get_entry",
-    { description: "Fetch one entry with its JIRA links, tags, sources and usage.", inputSchema: { id: z.string() } },
+    { description: "Fetch one entry with its issue links, tags, sources and usage.", inputSchema: { id: z.string() } },
     async ({ id }) => { const e = repo.get(id); return e ? json(e) : fail(`No entry ${id}`); },
   );
 
   server.registerTool(
     "list_entries",
-    { description: "List entries in chronological order, optionally filtered by date range, effort, JIRA key, tag or project.", inputSchema: filterShape },
+    { description: "List entries in chronological order, optionally filtered by date range, effort, issue key, tag or project.", inputSchema: filterShape },
     async (f) => json(repo.list(f)),
   );
 
@@ -118,13 +125,14 @@ export function createServer(db: Db): McpServer {
     "get_report_data",
     {
       description:
-        "Aggregated data for a report. If `from` is omitted it starts the day after the last recorded report (or all-time if none); `to` defaults to today. Returns range, totals, outcome counts, JIRA keys, grouped totals and the full entries.",
+        "Aggregated data for a report. If `from` is omitted it starts the day after the last recorded report (or all-time if none); `to` defaults to today. Returns range, totals, outcome counts, distinct issues, grouped totals and the full entries.",
       inputSchema: {
         from: date.optional(),
         to: date.optional(),
-        group_by: z.enum(["effort", "jira", "tag", "month", "project"]).optional(),
+        group_by: z.enum(["effort", "issue", "tag", "month", "project"]).optional(),
         effort: z.string().optional(),
-        jira: z.string().optional(),
+        issue: z.string().optional(),
+        tracker: z.string().optional(),
         tag: z.string().optional(),
         project: z.string().optional(),
       },
