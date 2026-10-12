@@ -1,0 +1,19 @@
+{
+  "name": "captains-log-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "captains-log-mcp": "dist/index.js" },
+  "scripts": { "build": "tsc -p .", "test": "vitest run", "start": "node dist/index.js" },
+  "dependencies": {
+    "@mcp-servs/common": "*",
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "better-sqlite3": "^12.0.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.11"
+  }
+}
