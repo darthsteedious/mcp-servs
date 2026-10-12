@@ -2,34 +2,58 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DecisionsClient } from "./client.js";
 
-const name = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "letters, digits, _ and - only");
+const name = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,64}$/, "letters, digits, _ and - only")
+  .describe("Unique id for this question; the answer carries the same name");
 
 const question = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("predicate"),
-    name,
-    instructions: z.string().min(1).describe("A yes/no condition, e.g. 'Is the customer angry?'"),
-  }),
-  z.object({
-    type: z.literal("choice"),
-    name,
-    instructions: z.string().min(1),
-    choices: z
-      .array(z.object({ value: z.string().min(1), description: z.string().optional() }))
-      .min(2)
-      .max(255)
-      .describe("Distinct options. Include a fallback such as 'other'."),
-  }),
-  z.object({
-    type: z.literal("score"),
-    name,
-    instructions: z.string().min(1),
-    levels: z
-      .array(z.object({ label: z.string().min(1), description: z.string().optional() }))
-      .min(2)
-      .max(10)
-      .describe("Ordered lowest to highest. Index 0 is the lowest."),
-  }),
+  z
+    .object({
+      type: z.literal("predicate").describe("Yes/no (true/false) question"),
+      name,
+      instructions: z
+        .string()
+        .min(1)
+        .describe("A statement or yes/no question about the input, e.g. 'Is the customer angry?'. Answer is the probability it is true."),
+    })
+    .describe("Yes/no question. Answer: `probability` 0-1 that the answer is yes/true."),
+  z
+    .object({
+      type: z.literal("choice").describe("Pick exactly one option"),
+      name,
+      instructions: z.string().min(1).describe("What to decide, e.g. 'Which team should handle this?'"),
+      choices: z
+        .array(
+          z.object({
+            value: z.string().min(1).describe("The option's id, returned in the answer"),
+            description: z.string().optional().describe("What this option means; helps the model pick accurately"),
+          }),
+        )
+        .min(2)
+        .max(255)
+        .describe("2-255 mutually exclusive options. Add a fallback such as 'other' so nothing is forced into a bad fit."),
+    })
+    .describe("Pick-one question. Answer: `choice` (most likely option), `probabilities` per option (sum to 1), `confidence`."),
+  z
+    .object({
+      type: z.literal("score").describe("Rate on an ordered scale"),
+      name,
+      instructions: z.string().min(1).describe("What to rate, e.g. 'How urgent is this?'"),
+      levels: z
+        .array(
+          z.object({
+            label: z.string().min(1).describe("Short name of the level"),
+            description: z.string().optional().describe("What this level means"),
+          }),
+        )
+        .min(2)
+        .max(10)
+        .describe("2-10 levels ordered lowest to highest. The first is index 0."),
+    })
+    .describe(
+      "Ordered-scale question. Answer: `score` = probability-weighted level index (0-based, may fall between levels), `probabilities` per level, `confidence`.",
+    ),
 ]);
 
 const inputPart = z.union([
@@ -50,14 +74,18 @@ export function createServer(client: DecisionsClient): McpServer {
   server.registerTool(
     "decide",
     {
-      description:
-        "Ask a fast decision model typed questions about some text (or images) and get calibrated probabilities back, not prose. " +
-        "Question types: predicate (probability a condition is true), choice (pick one of 2-255 options, with a probability for each), " +
-        "score (rate on 2-10 ordered levels; result is an expected level index that can fall between levels). " +
-        "Good for routing, triage, classification and gating. All questions are about the same `input`. " +
-        "Answers come back in question order as `answers`.",
+      description: [
+        "Ask a fast decision model typed questions about some input and get probabilities back, not prose. Good for routing, triage, classification and gating.",
+        "",
+        "Every question has a unique `name`, a `type` and `instructions`. Three types:",
+        "- predicate: a yes/no question. Answer `probability` is the chance (0-1) it is true. Example: {type:'predicate', name:'angry', instructions:'Is the customer angry?'} -> 0.68 means about 68% likely yes. Pick your own threshold (e.g. >= 0.5).",
+        "- choice: pick exactly one of 2-255 `choices` ({value, description}). Answer gives the winning `choice`, a `probability` for every option (they sum to 1) and `confidence` (0 = all options equally likely, 1 = certain). Add an 'other' option as a fallback.",
+        "- score: rate on 2-10 ordered `levels` ({label, description}), lowest first. Answer `score` is the probability-weighted level index starting at 0, so 2.4 means between level 2 and level 3. Also returns `probabilities` per level and `confidence`.",
+        "",
+        "All questions are answered independently about the same `input`. `answers` come back in question order. A question the model declined comes back as {type:'refusal', name}.",
+      ].join("\n"),
       inputSchema: {
-        input: input.describe("Text to evaluate, or OpenAI-style user messages with input_text / input_image parts"),
+        input: input.describe("The text to evaluate. For structured data, pass it serialized as JSON text. Images: pass user messages with input_image parts (inline base64 data URLs only)."),
         questions: z
           .array(question)
           .min(1)

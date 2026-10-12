@@ -143,3 +143,22 @@ describe("config", () => {
     expect(() => configFromEnv({ DECISIONS_API_FORMAT: "nope" })).toThrow(/DECISIONS_API_FORMAT/);
   });
 });
+
+describe("tool schema", () => {
+  it("documents each question type so agents can use it", async () => {
+    const { createServer } = await import("../src/server.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const server = createServer(new DecisionsClient({ host: "http://x", format: "auto", model: "m", timeoutMs: 1000 }));
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "t", version: "1" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const decide = (await client.listTools()).tools.find((t) => t.name === "decide")!;
+    for (const w of ["predicate", "choice", "score", "yes/no", "probability", "confidence", "refusal"]) {
+      expect(decide.description).toContain(w);
+    }
+    expect(JSON.stringify(decide.inputSchema)).toContain("Unique id for this question");
+    expect(JSON.stringify(decide.inputSchema)).not.toContain("noul");
+    await client.close();
+  });
+});

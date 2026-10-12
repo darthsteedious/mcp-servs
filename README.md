@@ -76,6 +76,54 @@ claude mcp add decisions -e DECISIONS_API_HOST=http://localhost:1234 -- node /AB
 
 Tools: `decide`, `list_decision_models` (also shows the active config). The backend must have a *decision* model loaded; chat models are rejected. `node servers/decisions/test/live.mjs` runs a live check against whatever the env points at.
 
+### Question types
+
+The `decide` tool exposes three question types. All questions share a unique `name` and `instructions`, and are answered independently about the same `input`. Answers come back in question order.
+
+| Type | Use it for | You supply | You get back |
+| --- | --- | --- | --- |
+| `predicate` | A yes/no question ("Is the customer angry?") | nothing extra | `probability`: chance (0-1) the answer is yes/true. Apply your own threshold. |
+| `choice` | Pick exactly one option (routing, category) | `choices`: 2-255 of `{value, description?}`. Include an "other" fallback. | `choice` (winner), `probabilities` per option (sum to 1), `confidence` (0 = all equally likely, 1 = certain) |
+| `score` | Rate on an ordered scale (urgency, severity) | `levels`: 2-10 of `{label, description?}`, lowest first | `score`: probability-weighted level index, 0-based, may fall between levels (2.4 is between 2 and 3). Also `probabilities` per level and `confidence`. |
+
+A question the model declines comes back as `{type: "refusal", name}`.
+
+```jsonc
+// decide({ input, questions })
+{
+  "input": "I was charged twice and nobody has replied.",
+  "questions": [
+    { "type": "predicate", "name": "angry", "instructions": "Is the customer angry?" },
+    { "type": "choice", "name": "route", "instructions": "Which team should handle this?",
+      "choices": [{ "value": "billing" }, { "value": "shipping" }, { "value": "other" }] },
+    { "type": "score", "name": "urgency", "instructions": "How urgent is this?",
+      "levels": [{ "label": "can wait" }, { "label": "today" }, { "label": "right now" }] }
+  ]
+}
+// -> answers: [
+//   { "type": "predicate", "name": "angry", "probability": 0.68 },
+//   { "type": "choice", "name": "route", "choice": "billing", "probabilities": [...], "confidence": 0.9 },
+//   { "type": "score", "name": "urgency", "score": 1.64, "probabilities": [...], "confidence": 0.3 } ]
+```
+
+### How the two backend dialects map
+
+The two APIs ask for the same things in different shapes. The question semantics, limits (255 choices, 2-10 levels) and answer meanings are the same, so the translation is lossless for everything the tool exposes.
+
+| | OpenAI Decisions (ours) | System One (translated) |
+| --- | --- | --- |
+| Endpoint | `POST /v1/decisions` | `POST /v1/systemone` |
+| Text under evaluation | `input` | `state` |
+| Questions | array, each with `name` | object keyed by question id |
+| Yes/no | `predicate` -> `probability` | `noul` -> `noul` |
+| Pick one | `choices: [{value, description}]` | `criteria: {option: description or null}` |
+| Rate | `levels: [{label, description}]` | `criteria: ["level text", ...]` (one string per level, so we send `label: description`) |
+| Answers | array in question order | object keyed by id |
+| Probabilities | `[{value, probability}]` (score adds `label`) | `{option: p}`, score adds a `legend` map |
+| Declined question | `refusal` answer | none (we synthesize a `refusal`) |
+
+Not exposed, because only System One has them: structured (object/array) `state`, custom true/false wording for `noul`, and audio input. Pass structured data as JSON text in `input`.
+
 ### Which API is winning? (as of 2026-10-12, early days)
 
 Both specs are days to weeks old, so this is a snapshot, not a verdict.
