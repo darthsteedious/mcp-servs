@@ -43,7 +43,7 @@ const entryShape = {
   time_saved_min: z.number().int().nonnegative().optional(),
   platform: z.string().optional().describe("Agent platform, e.g. claude-code, cursor, codex"),
   model: z.string().optional(),
-  session_ref: z.string().optional().describe("Thread/session identifier if available"),
+  session_ref: z.string().optional().describe("The platform's thread/session id. With `platform`, identifies the thread: one entry per thread, so logging the same thread again returns the existing entry. Omit if you have no real id; don't invent one."),
   project: z.string().optional().describe("Repo or project name"),
   metadata: z.record(z.unknown()).optional().describe("Anything else worth keeping"),
   issues: z.array(issue).optional().describe("Work items (tickets, issues, stories) this work relates to, from any tracker"),
@@ -60,6 +60,8 @@ const filterShape = {
   tracker: z.string().optional().describe("Narrow `issue` (or all issues) to one tracker, e.g. jira"),
   tag: z.string().optional(),
   project: z.string().optional(),
+  session_ref: z.string().optional().describe("Only the entry for this thread/session id (combine with platform)"),
+  platform: z.string().optional().describe("Agent platform, e.g. claude-code"),
   limit: z.number().int().positive().max(5000).optional(),
 };
 
@@ -78,17 +80,40 @@ export function createServer(db: Db): McpServer {
 
   server.registerTool(
     "log_entry",
-    { description: "Create a captain's log entry for a finished unit of work (usually one agent thread).", inputSchema: entryShape },
-    async (a) => json({ id: repo.create(a) }),
+    {
+      description:
+        "Create a captain's log entry for a finished unit of work (usually one agent thread). Idempotent per (platform, session_ref): " +
+        "if that thread already has an entry, nothing is created and the existing entry is returned with status 'exists'. " +
+        "In that case compare it to the current state of the work and call update_entry if it is out of date.",
+      inputSchema: entryShape,
+    },
+    async (a) => {
+      const r = repo.createOrGet(a);
+      return json(
+        r.created
+          ? { status: "created", id: r.id }
+          : { status: "exists", id: r.id, note: "This thread is already logged. Nothing was changed.", entry: repo.get(r.id) },
+      );
+    },
   );
 
   server.registerTool(
     "update_entry",
     {
-      description: "Patch an entry. Scalar fields are patched; issues/tags/sources/usage, when provided, REPLACE the existing set.",
+      description:
+        "Patch an entry. Scalar fields are patched; issues/tags/sources/usage, when provided, REPLACE the existing set (send the full list, and cumulative usage totals). " +
+        "If the result is identical to what is stored, nothing is written and `changed` is false.",
       inputSchema: { id: z.string(), ...Object.fromEntries(Object.entries(entryShape).map(([k, v]) => [k, (v as z.ZodTypeAny).optional()])) },
     },
-    async ({ id, ...patch }) => (repo.update(id, patch as any) ? json({ id, updated: true }) : fail(`No entry ${id}`)),
+    async ({ id, ...patch }) => {
+      try {
+        const r = repo.update(id, patch as any);
+        return r.found ? json({ id, changed: r.changed }) : fail(`No entry ${id}`);
+      } catch (e) {
+        if ((e as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") return fail("Another entry already uses that platform + session_ref.");
+        throw e;
+      }
+    },
   );
 
   server.registerTool(

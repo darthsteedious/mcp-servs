@@ -80,10 +80,8 @@ export const V1_SCHEMA = `
   CREATE VIRTUAL TABLE entries_fts USING fts5(entry_id UNINDEXED, title, summary, effort);
   `;
 
-const MIGRATIONS: string[] = [
-  V1_SCHEMA,
-  // v2: tracker-agnostic issue links replace the Jira-only table.
-  `
+/** v2: tracker-agnostic issue links replace the Jira-only table. Exported for tests. */
+export const V2_STEP = `
   CREATE TABLE entry_issues (
     entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
     tracker TEXT NOT NULL DEFAULT '',    -- free-form: jira, linear, github, gitlab, servicenow, asana, ... ('' = unspecified)
@@ -96,6 +94,20 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_entry_issues_key ON entry_issues(key);
   INSERT INTO entry_issues(entry_id, tracker, key, role) SELECT entry_id, 'jira', key, role FROM entry_jira;
   DROP TABLE entry_jira;
+  `;
+
+const MIGRATIONS: string[] = [
+  V1_SCHEMA,
+  V2_STEP,
+  // v3: one entry per agent thread. Earlier duplicates keep the oldest entry's session_ref; the
+  // others have it moved into metadata.former_session_ref so nothing is lost.
+  `
+  UPDATE entries
+     SET metadata = json_set(COALESCE(metadata, '{}'), '$.former_session_ref', session_ref),
+         session_ref = NULL
+   WHERE session_ref IS NOT NULL
+     AND rowid NOT IN (SELECT MIN(rowid) FROM entries WHERE session_ref IS NOT NULL GROUP BY COALESCE(platform, ''), session_ref);
+  CREATE UNIQUE INDEX idx_entries_session ON entries(COALESCE(platform, ''), session_ref) WHERE session_ref IS NOT NULL;
   `,
 ];
 

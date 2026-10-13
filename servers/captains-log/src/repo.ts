@@ -52,8 +52,25 @@ export interface Filters {
   tracker?: string;
   tag?: string;
   project?: string;
+  session_ref?: string;
+  platform?: string;
   limit?: number;
 }
+
+/** Platform names are matched case-insensitively, so store them normalized. */
+const normPlatform = (p?: string) => (p === undefined ? undefined : p.trim().toLowerCase() || undefined);
+
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+class NoChange extends Error {}
+const isUnique = (e: unknown) => (e as { code?: string })?.code === "SQLITE_CONSTRAINT_UNIQUE";
 
 export const today = () => new Date().toISOString().slice(0, 10);
 const newId = () => Date.now().toString(36).padStart(9, "0") + randomBytes(5).toString("hex");
@@ -109,7 +126,41 @@ export class Repo {
       .run(id);
   }
 
+  /** Entry content only: no id or timestamps, with stable key order. Used to detect no-op updates. */
+  private canonical(id: string): string {
+    const { id: _i, created_at: _c, updated_at: _u, ...rest } = this.get(id) as Record<string, unknown>;
+    return stableStringify(rest);
+  }
+
+  private findBySession(platform: string | undefined, sessionRef: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT id FROM entries WHERE COALESCE(platform,'') = ? AND session_ref = ?")
+      .get(platform ?? "", sessionRef) as { id: string } | undefined;
+    return row?.id;
+  }
+
   create(e: EntryInput): string {
+    return this.createOrGet(e).id;
+  }
+
+  /** Idempotent per (platform, session_ref): a thread that already has an entry gets that entry back. */
+  createOrGet(e: EntryInput): { id: string; created: boolean } {
+    const platform = normPlatform(e.platform);
+    if (e.session_ref) {
+      const existing = this.findBySession(platform, e.session_ref);
+      if (existing) return { id: existing, created: false };
+    }
+    try {
+      return { id: this.insert({ ...e, platform }), created: true };
+    } catch (err) {
+      // Lost a race with another connection logging the same thread.
+      const existing = isUnique(err) && e.session_ref ? this.findBySession(platform, e.session_ref) : undefined;
+      if (existing) return { id: existing, created: false };
+      throw err;
+    }
+  }
+
+  private insert(e: EntryInput): string {
     const id = newId();
     const now = new Date().toISOString();
     this.db.transaction(() => {
@@ -130,14 +181,21 @@ export class Repo {
     return id;
   }
 
-  /** Scalar fields are patched; child collections (issues/tags/sources/usage), when provided, replace the existing set. */
-  update(id: string, p: EntryPatch): boolean {
+  /**
+   * Scalar fields are patched; child collections (issues/tags/sources/usage), when provided, replace the
+   * existing set. If the result is identical to what is stored, nothing is written (`changed: false`,
+   * `updated_at` untouched).
+   */
+  update(id: string, patch: EntryPatch): { found: boolean; changed: boolean } {
+    const p: EntryPatch = patch.platform === undefined ? patch : { ...patch, platform: normPlatform(patch.platform) };
     const scalar = [
       "occurred_on", "title", "summary", "effort", "outcome", "time_spent_min", "time_saved_min",
       "platform", "model", "session_ref", "project",
     ] as const;
-    return this.db.transaction(() => {
-      if (!this.db.prepare("SELECT 1 FROM entries WHERE id = ?").get(id)) return false;
+    try {
+      return this.db.transaction(() => {
+      if (!this.db.prepare("SELECT 1 FROM entries WHERE id = ?").get(id)) return { found: false, changed: false };
+      const before = this.canonical(id);
       const sets: string[] = ["updated_at = ?"];
       const vals: unknown[] = [new Date().toISOString()];
       for (const k of scalar) if (p[k] !== undefined) { sets.push(`${k} = ?`); vals.push(p[k]); }
@@ -145,8 +203,13 @@ export class Repo {
       this.db.prepare(`UPDATE entries SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
       this.writeChildren(id, p, true);
       this.syncFts(id);
-      return true;
-    }).immediate();
+      if (this.canonical(id) === before) throw new NoChange(); // roll back: keep updated_at and FTS as they were
+      return { found: true, changed: true };
+      }).immediate();
+    } catch (e) {
+      if (e instanceof NoChange) return { found: true, changed: false };
+      throw e;
+    }
   }
 
   delete(id: string): boolean {
@@ -200,6 +263,8 @@ export class Repo {
     if (f.from) { c.push(`${alias}.occurred_on >= ?`); p.push(f.from); }
     if (f.to) { c.push(`${alias}.occurred_on <= ?`); p.push(f.to); }
     if (f.effort) { c.push(`${alias}.effort = ? COLLATE NOCASE`); p.push(f.effort); }
+    if (f.session_ref) { c.push(`${alias}.session_ref = ?`); p.push(f.session_ref); }
+    if (f.platform) { c.push(`COALESCE(${alias}.platform,'') = ?`); p.push(normPlatform(f.platform) ?? ""); }
     if (f.project) { c.push(`${alias}.project = ? COLLATE NOCASE`); p.push(f.project); }
     if (f.issue || f.tracker) {
       const q: string[] = [];

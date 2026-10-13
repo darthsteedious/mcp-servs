@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
-import { V1_SCHEMA } from "../src/db.js";
+import { V1_SCHEMA, V2_STEP } from "../src/db.js";
 import { openDb } from "../src/db.js";
 import { buildReportData } from "../src/report.js";
 import { Repo } from "../src/repo.js";
@@ -23,11 +23,135 @@ describe("migrations", () => {
     db.close();
 
     const upgraded = openDb(path);
-    expect(upgraded.pragma("user_version", { simple: true })).toBe(2);
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(3);
     expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE name='entry_jira'").get()).toBeUndefined();
     expect((new Repo(upgraded).get("e1") as any).issues).toEqual([
       { tracker: "jira", key: "OLD-1", url: null, title: null, role: "primary" },
     ]);
+  });
+});
+
+describe("migration v3", () => {
+  it("dedupes existing session_refs before adding the unique index", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "cl-v3-")), "v2.db");
+    const db = new Database(path);
+    db.exec(V1_SCHEMA);
+    db.exec(V2_STEP);
+    db.pragma("user_version = 2");
+    const ins = db.prepare("INSERT INTO entries(id,created_at,updated_at,occurred_on,title,summary,platform,session_ref) VALUES (?,?,?,?,?,?,?,?)");
+    ins.run("a", "x", "x", "2026-01-01", "t", "s", "claude-code", "S1");
+    ins.run("b", "x", "x", "2026-01-01", "t", "s", "claude-code", "S1"); // duplicate thread
+    ins.run("c", "x", "x", "2026-01-01", "t", "s", "cursor", "S1"); // different platform: fine
+    db.close();
+
+    const repo = new Repo(openDb(path));
+    expect((repo.get("a") as any).session_ref).toBe("S1");
+    expect((repo.get("b") as any).session_ref).toBeNull();
+    expect((repo.get("b") as any).metadata).toEqual({ former_session_ref: "S1" });
+    expect((repo.get("c") as any).session_ref).toBe("S1");
+  });
+});
+
+describe("one entry per thread", () => {
+  it("createOrGet returns the existing entry for the same platform + session_ref", () => {
+    const r = mk();
+    const first = r.createOrGet({ title: "T", summary: "s", platform: "Claude-Code", session_ref: "abc" });
+    expect(first.created).toBe(true);
+    const again = r.createOrGet({ title: "Different", summary: "other", platform: " claude-code ", session_ref: "abc" });
+    expect(again).toEqual({ id: first.id, created: false });
+    expect((r.get(first.id) as any).title).toBe("T"); // untouched
+    expect(r.list()).toHaveLength(1);
+  });
+
+  it("treats other platforms, and entries without a session_ref, as distinct", () => {
+    const r = mk();
+    r.createOrGet({ title: "A", summary: "s", platform: "cursor", session_ref: "abc" });
+    expect(r.createOrGet({ title: "B", summary: "s", platform: "claude-code", session_ref: "abc" }).created).toBe(true);
+    expect(r.createOrGet({ title: "C", summary: "s" }).created).toBe(true);
+    expect(r.createOrGet({ title: "D", summary: "s" }).created).toBe(true);
+    expect(r.list()).toHaveLength(4);
+  });
+
+  it("matches a session_ref logged without a platform only when platform is also omitted", () => {
+    const r = mk();
+    r.createOrGet({ title: "A", summary: "s", session_ref: "x" });
+    expect(r.createOrGet({ title: "B", summary: "s", session_ref: "x" }).created).toBe(false);
+    expect(r.createOrGet({ title: "C", summary: "s", session_ref: "x", platform: "cursor" }).created).toBe(true);
+  });
+
+  it("filters by session_ref and platform", () => {
+    const r = mk();
+    r.create({ title: "A", summary: "s", platform: "cursor", session_ref: "abc" });
+    r.create({ title: "B", summary: "s", platform: "claude-code", session_ref: "abc" });
+    expect(r.list({ session_ref: "abc" })).toHaveLength(2);
+    expect(r.list({ session_ref: "abc", platform: "Cursor" }).map((e: any) => e.title)).toEqual(["A"]);
+    expect(r.list({ session_ref: "nope" })).toHaveLength(0);
+  });
+
+  it("recovers when another connection inserts between the lookup and the insert", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "cl-race2-")), "r.db");
+    openDb(path).close();
+    const winner = new Repo(openDb(path));
+    const loser = new Repo(openDb(path)) as any;
+    const real = loser.findBySession.bind(loser);
+    let calls = 0;
+    // First lookup misses (the other writer hasn't committed yet); the insert then hits the unique index.
+    loser.findBySession = (...a: unknown[]) => (calls++ === 0 ? undefined : real(...a));
+    const w = winner.createOrGet({ title: "W", summary: "s", platform: "p", session_ref: "same" });
+    const l = loser.createOrGet({ title: "L", summary: "s", platform: "p", session_ref: "same" });
+    expect(l).toEqual({ id: w.id, created: false });
+    expect(calls).toBe(2);
+  });
+
+  it("sequential connections converge on one entry", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "cl-race-")), "r.db");
+    openDb(path).close();
+    const a = new Repo(openDb(path));
+    const b = new Repo(openDb(path));
+    const results = [a, b, a, b].map((r) => r.createOrGet({ title: "T", summary: "s", platform: "p", session_ref: "same" }));
+    expect(results.filter((x) => x.created)).toHaveLength(1);
+    expect(new Set(results.map((x) => x.id)).size).toBe(1);
+    expect(a.list()).toHaveLength(1);
+  });
+
+  it("rejects moving an entry onto another thread's session_ref", () => {
+    const r = mk();
+    r.create({ title: "A", summary: "s", platform: "p", session_ref: "one" });
+    const b = r.create({ title: "B", summary: "s", platform: "p", session_ref: "two" });
+    expect(() => r.update(b, { session_ref: "one" })).toThrow(/UNIQUE/);
+    expect((r.get(b) as any).session_ref).toBe("two");
+  });
+});
+
+describe("no-op updates", () => {
+  const base = {
+    title: "T", summary: "s", effort: "E", tags: ["a", "b"], metadata: { x: 1, y: 2 },
+    issues: [{ key: "A-1", tracker: "jira" }], sources: [{ type: "pr", ref: "1" }], usage: [{ input_tokens: 5, source: "reported" as const }],
+  };
+
+  it("leaves updated_at and content alone when nothing differs", async () => {
+    const r = mk();
+    const id = r.create(base);
+    const before = r.get(id) as any;
+    await new Promise((res) => setTimeout(res, 5));
+    // same values, different tag order and metadata key order
+    expect(r.update(id, { ...base, tags: ["b", "a"], metadata: { y: 2, x: 1 } })).toEqual({ found: true, changed: false });
+    expect(r.update(id, { summary: "s" })).toEqual({ found: true, changed: false });
+    expect((r.get(id) as any).updated_at).toBe(before.updated_at);
+    expect(r.search("s")).toHaveLength(1); // FTS intact after the rollback
+  });
+
+  it("writes and bumps updated_at when something differs", async () => {
+    const r = mk();
+    const id = r.create(base);
+    const before = (r.get(id) as any).updated_at;
+    await new Promise((res) => setTimeout(res, 5));
+    expect(r.update(id, { usage: [{ input_tokens: 9, source: "reported" }] })).toEqual({ found: true, changed: true });
+    const after = r.get(id) as any;
+    expect(after.updated_at).not.toBe(before);
+    expect(after.usage[0].input_tokens).toBe(9);
+    expect(r.update(id, { tags: ["a"] }).changed).toBe(true);
+    expect((r.get(id) as any).tags).toEqual(["a"]);
   });
 });
 
@@ -73,7 +197,7 @@ describe("repo", () => {
     expect(r.search("beta")).toHaveLength(1);
     expect(r.delete(id)).toBe(true);
     expect(r.search("beta")).toHaveLength(0);
-    expect(r.update("nope", { title: "x" })).toBe(false);
+    expect(r.update("nope", { title: "x" })).toEqual({ found: false, changed: false });
   });
 
   it("report range defaults to the day after the last report", () => {

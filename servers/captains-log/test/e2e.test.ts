@@ -45,6 +45,20 @@ describe("e2e: stdio + http share one DB", () => {
       expect(rep.issues).toEqual([{ tracker: "jira", key: "A-1", title: "Fix it", url: null }]);
       expect(rep.groups.map((g: any) => g.key).sort()).toEqual(["(no issue)", "jira:A-1"]);
 
+      // Same thread logged twice (once per transport): one entry, second call reports 'exists'.
+      const t = { title: "thread", summary: "first", occurred_on: "2026-09-03", platform: "claude-code", session_ref: "sess-1" };
+      const first = JSON.parse(text(await stdio.callTool({ name: "log_entry", arguments: t })));
+      const again = JSON.parse(text(await web.callTool({ name: "log_entry", arguments: { ...t, summary: "second" } })));
+      expect(first.status).toBe("created");
+      expect(again).toMatchObject({ status: "exists", id: first.id });
+      expect(again.entry.summary).toBe("first");
+      const found = JSON.parse(text(await web.callTool({ name: "list_entries", arguments: { session_ref: "sess-1", platform: "claude-code" } })));
+      expect(found.map((e: any) => e.id)).toEqual([first.id]);
+      const same = JSON.parse(text(await stdio.callTool({ name: "update_entry", arguments: { id: first.id, summary: "first" } })));
+      expect(same).toEqual({ id: first.id, changed: false });
+      const changed = JSON.parse(text(await stdio.callTool({ name: "update_entry", arguments: { id: first.id, summary: "revised" } })));
+      expect(changed.changed).toBe(true);
+
       const bad = await stdio.callTool({ name: "get_entry", arguments: { id: "nope" } });
       expect(bad.isError).toBe(true);
       const p = await stdio.getPrompt({ name: "write-captains-log" });
