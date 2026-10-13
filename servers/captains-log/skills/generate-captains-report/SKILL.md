@@ -11,7 +11,7 @@ Build a report from the `captains-log` MCP server's entries.
 
 - If the user gave a range ("last month", "Q3", "2026-09-01 to 2026-09-30", "this week"), convert it to explicit `from`/`to` dates (YYYY-MM-DD, inclusive) and say what you resolved it to.
 - If they gave none, call `get_report_data` without `from`. The server starts the day after the last recorded report (or all-time if there has been none) and ends today. Tell the user the range it used, and offer to change it.
-- Optional filters: `effort`, `issue` (a key, optionally narrowed with `tracker`), `tag`, `project`. Optional `group_by`: effort (default), issue, tag, month, project.
+- Optional filters: `effort`, `issue` (a key, optionally narrowed with `tracker`), `tag`, `project`, `workspace` (a path or repo URL). Optional `group_by`: effort (default), issue, tag, month, project, workspace.
 
 ## 2. Fetch the data
 

@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import { V1_SCHEMA, V2_STEP } from "../src/db.js";
 import { openDb } from "../src/db.js";
 import { buildReportData } from "../src/report.js";
-import { Repo } from "../src/repo.js";
+import { Repo, cleanRepo } from "../src/repo.js";
 
 const mk = () => new Repo(openDb(":memory:"));
 
@@ -23,7 +23,7 @@ describe("migrations", () => {
     db.close();
 
     const upgraded = openDb(path);
-    expect(upgraded.pragma("user_version", { simple: true })).toBe(3);
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(4);
     expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE name='entry_jira'").get()).toBeUndefined();
     expect((new Repo(upgraded).get("e1") as any).issues).toEqual([
       { tracker: "jira", key: "OLD-1", url: null, title: null, role: "primary" },
@@ -120,6 +120,41 @@ describe("one entry per thread", () => {
     const b = r.create({ title: "B", summary: "s", platform: "p", session_ref: "two" });
     expect(() => r.update(b, { session_ref: "one" })).toThrow(/UNIQUE/);
     expect((r.get(b) as any).session_ref).toBe("two");
+  });
+});
+
+describe("workspace", () => {
+  it("strips credentials from repo URLs", () => {
+    expect(cleanRepo("https://ghp_SECRET123@github.com/me/repo.git")).toBe("https://github.com/me/repo.git");
+    expect(cleanRepo("https://me:hunter2@github.com/me/repo.git")).toBe("https://github.com/me/repo.git");
+    expect(cleanRepo("https://oauth2:tok@gitlab.com/g/p.git?private_token=x#frag")).toBe("https://gitlab.com/g/p.git");
+    expect(cleanRepo("ssh://git@github.com/me/repo.git")).toBe("ssh://git@github.com/me/repo.git"); // ssh user is not a secret
+    expect(cleanRepo("ssh://git:pw@host/me/repo.git")).toBe("ssh://git@host/me/repo.git");
+    expect(cleanRepo("git@github.com:me/repo.git")).toBe("git@github.com:me/repo.git");
+    expect(cleanRepo("  ")).toBeUndefined();
+    expect(cleanRepo(undefined)).toBeUndefined();
+  });
+
+  it("stores workspace/repo/branch, cleaning the repo on create and update", () => {
+    const r = mk();
+    const id = r.create({ title: "T", summary: "s", workspace: "/w/a", repo: "https://tok@github.com/me/a.git", branch: "main" });
+    expect(r.get(id)).toMatchObject({ workspace: "/w/a", repo: "https://github.com/me/a.git", branch: "main" });
+    r.update(id, { repo: "https://u:p@github.com/me/b.git" });
+    expect((r.get(id) as any).repo).toBe("https://github.com/me/b.git");
+    expect(JSON.stringify(r.get(id))).not.toMatch(/tok|u:p/);
+  });
+
+  it("filters by workspace path or repo, and groups by repo else path", () => {
+    const r = mk();
+    r.create({ title: "A", summary: "s", occurred_on: "2026-09-01", workspace: "/w/a", repo: "https://github.com/me/a.git" });
+    r.create({ title: "B", summary: "s", occurred_on: "2026-09-01", workspace: "/w/a", repo: "https://github.com/me/a.git" });
+    r.create({ title: "C", summary: "s", occurred_on: "2026-09-02", workspace: "/w/scratch" });
+    r.create({ title: "D", summary: "s", occurred_on: "2026-09-03" });
+    expect(r.list({ workspace: "/w/a" })).toHaveLength(2);
+    expect(r.list({ workspace: "https://tok@GITHUB.com/me/a.git".replace("GITHUB", "github") })).toHaveLength(2); // creds ignored in the filter
+    expect(r.list({ workspace: "/w/scratch" })).toHaveLength(1);
+    const g = buildReportData(r, { to: "2026-09-30", group_by: "workspace" }).groups.map((x) => [x.key, x.totals.entries]);
+    expect(g).toEqual([["https://github.com/me/a.git", 2], ["(no workspace)", 1], ["/w/scratch", 1]]);
   });
 });
 

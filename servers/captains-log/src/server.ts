@@ -44,7 +44,10 @@ const entryShape = {
   platform: z.string().optional().describe("Agent platform, e.g. claude-code, cursor, codex"),
   model: z.string().optional(),
   session_ref: z.string().optional().describe("The platform's thread/session id. With `platform`, identifies the thread: one entry per thread, so logging the same thread again returns the existing entry. Omit if you have no real id; don't invent one."),
-  project: z.string().optional().describe("Repo or project name"),
+  project: z.string().optional().describe("Short human-friendly project or repo name, e.g. 'mcp-servs'"),
+  workspace: z.string().optional().describe("Absolute path of the directory the agent was working in (its cwd / workspace root)"),
+  repo: z.string().optional().describe("Git remote URL of the workspace (e.g. `git remote get-url origin`). Credentials in the URL are stripped on save."),
+  branch: z.string().optional().describe("Git branch checked out, if any"),
   metadata: z.record(z.unknown()).optional().describe("Anything else worth keeping"),
   issues: z.array(issue).optional().describe("Work items (tickets, issues, stories) this work relates to, from any tracker"),
   tags: z.array(z.string()).optional(),
@@ -60,6 +63,7 @@ const filterShape = {
   tracker: z.string().optional().describe("Narrow `issue` (or all issues) to one tracker, e.g. jira"),
   tag: z.string().optional(),
   project: z.string().optional(),
+  workspace: z.string().optional().describe("Workspace path, or repo remote URL"),
   session_ref: z.string().optional().describe("Only the entry for this thread/session id (combine with platform)"),
   platform: z.string().optional().describe("Agent platform, e.g. claude-code"),
   limit: z.number().int().positive().max(5000).optional(),
@@ -124,7 +128,7 @@ export function createServer(db: Db): McpServer {
 
   server.registerTool(
     "list_entries",
-    { description: "List entries in chronological order, optionally filtered by date range, effort, issue key, tag or project.", inputSchema: filterShape },
+    { description: "List entries in chronological order, optionally filtered by date range, effort, issue key, tag, project or workspace.", inputSchema: filterShape },
     async (f) => json(repo.list(f)),
   );
 
@@ -154,12 +158,13 @@ export function createServer(db: Db): McpServer {
       inputSchema: {
         from: date.optional(),
         to: date.optional(),
-        group_by: z.enum(["effort", "issue", "tag", "month", "project"]).optional(),
+        group_by: z.enum(["effort", "issue", "tag", "month", "project", "workspace"]).optional(),
         effort: z.string().optional(),
         issue: z.string().optional(),
         tracker: z.string().optional(),
         tag: z.string().optional(),
         project: z.string().optional(),
+        workspace: z.string().optional(),
       },
     },
     async ({ from, to, group_by, ...filters }) => json(buildReportData(repo, { from, to, group_by, filters })),

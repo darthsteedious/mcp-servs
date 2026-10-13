@@ -1,6 +1,6 @@
 import { Repo, today, type Filters } from "./repo.js";
 
-export type GroupBy = "effort" | "issue" | "tag" | "month" | "project";
+export type GroupBy = "effort" | "issue" | "tag" | "month" | "project" | "workspace";
 
 type Entry = Record<string, any>;
 
@@ -42,6 +42,7 @@ function keysFor(e: Entry, by: GroupBy): string[] {
   switch (by) {
     case "effort": return [e.effort ?? "(no effort)"];
     case "project": return [e.project ?? "(no project)"];
+    case "workspace": return [e.repo ?? e.workspace ?? "(no workspace)"];
     case "month": return [String(e.occurred_on).slice(0, 7)];
     case "tag": return e.tags.length ? e.tags : ["(untagged)"];
     case "issue": return e.issues.length ? e.issues.map(issueLabel) : ["(no issue)"];

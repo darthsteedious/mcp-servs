@@ -19,7 +19,7 @@ Work out the thread's identity first:
 Then look for an existing entry:
 
 1. **With a `session_ref`:** call `list_entries` with `session_ref` and `platform`. At most one entry comes back.
-2. **Without one:** call `list_entries` for today's date and the current `project`, and look for an entry whose title and summary describe this same thread's work. If one plausibly matches, show it to the user and ask whether it is the same thread. Don't update on a guess. If none matches, treat it as new, and tell the user it can't be matched automatically if they run this again.
+2. **Without one:** call `list_entries` for today's date and the current `workspace`, and look for an entry whose title and summary describe this same thread's work. If one plausibly matches, show it to the user and ask whether it is the same thread. Don't update on a guess. If none matches, treat it as new, and tell the user it can't be matched automatically if they run this again.
 
 Then:
 
@@ -36,7 +36,14 @@ From the conversation, collect:
 - **outcome**: shipped, in_progress, blocked, abandoned, or research.
 - **issues**: every work item (ticket, issue, story, incident) mentioned or worked on, from whatever tracker the user uses. Each has the tracker's own `key` as written there (PROJ-123, #456, INC0012345), plus `tracker` (jira, linear, github, servicenow, ... or omit if unclear), `url`, `title` when known, and a `role` (primary, related, blocked-by). Don't force a format; record the identifier exactly as the tracker shows it.
 - **tags**: a few short labels (bugfix, feature, research, review, incident, ...).
-- **project**, **platform**, **model**, and **session_ref** (only if real, see step 0).
+- **Where the work happened.** Record the workspace the thread was working in:
+  - `workspace`: the absolute path of the directory you were working in (your working directory / workspace root).
+  - `repo`: the git remote URL, if the workspace is a git repo (for example `git remote get-url origin`). Credentials in a URL are stripped by the server, but don't go out of your way to include them.
+  - `branch`: the checked-out branch (for example `git branch --show-current`).
+  - `project`: a short human-friendly name for it (usually the repo or folder name).
+
+  Take these from your actual environment; run the git commands if you have a shell. If the thread worked across several workspaces, record the main one and mention the others in the summary. Leave a field out when you can't determine it. It isn't a git repo, or you have no way to see the directory. Don't guess a path.
+- **platform**, **model**, and **session_ref** (only if real, see step 0).
 - **time_spent_min / time_saved_min**: rough estimates only. If unsure, ask the user or omit. Don't invent them.
 - **usage**: token counts and cost for the **whole thread so far**. Use real numbers only if the platform exposes them (`source: "reported"`). Otherwise give a rough estimate with `source: "estimated"`, or omit it. Never present a guess as reported.
 
@@ -56,7 +63,7 @@ Only record what you actually saw. If a lookup fails or a tool isn't available, 
 
 ## 3. New entry: confirm, then save
 
-Show the user a short preview (title, effort, issues, outcome, source list). Ask only about things you can't determine yourself, such as the effort name, time estimates, or a missing issue key. Then call `log_entry` and report the returned id.
+Show the user a short preview (title, effort, workspace/repo, issues, outcome, source list). Ask only about things you can't determine yourself, such as the effort name, time estimates, or a missing issue key. Then call `log_entry` and report the returned id.
 
 `log_entry` is idempotent per (`platform`, `session_ref`). If it answers `status: "exists"` instead of `"created"`, nothing was written: someone logged this thread in the meantime. Continue at step 4 with the entry it returned.
 
@@ -65,7 +72,7 @@ Show the user a short preview (title, effort, issues, outcome, source list). Ask
 Compare what the entry says with what you now know. Count a change only if it is **material**:
 
 - new work done, new decisions or results, or a changed outcome (e.g. in_progress -> shipped)
-- issues, sources, tags, or effort added, corrected, or no longer accurate
+- issues, sources, tags, effort, or workspace/branch added, corrected, or no longer accurate
 - usage that has grown because the thread continued
 - a correction to something the entry got wrong
 

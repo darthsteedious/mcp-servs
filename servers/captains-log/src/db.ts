@@ -109,6 +109,14 @@ const MIGRATIONS: string[] = [
      AND rowid NOT IN (SELECT MIN(rowid) FROM entries WHERE session_ref IS NOT NULL GROUP BY COALESCE(platform, ''), session_ref);
   CREATE UNIQUE INDEX idx_entries_session ON entries(COALESCE(platform, ''), session_ref) WHERE session_ref IS NOT NULL;
   `,
+  // v4: where the work happened.
+  `
+  ALTER TABLE entries ADD COLUMN workspace TEXT;   -- directory the agent was working in
+  ALTER TABLE entries ADD COLUMN repo TEXT;        -- git remote URL (credentials stripped) if the workspace is a repo
+  ALTER TABLE entries ADD COLUMN branch TEXT;
+  CREATE INDEX idx_entries_workspace ON entries(workspace);
+  CREATE INDEX idx_entries_repo ON entries(repo);
+  `,
 ];
 
 export function openDb(path: string = defaultDbPath()): Db {

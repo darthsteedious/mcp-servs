@@ -54,6 +54,8 @@ node servers/captains-log/scripts/install-skills.mjs --target agents-md --projec
 node servers/captains-log/scripts/install-skills.mjs --target dir:/some/path
 ```
 
+**Workspace.** Each entry can record where the work happened: `workspace` (directory path), `repo` (git remote, with any embedded credentials stripped on save) and `branch`, plus a short `project` name. The skill fills them from the agent's environment. Reports can filter and group by workspace.
+
 **One entry per thread.** Entries are keyed by `platform` + `session_ref` (the agent's real thread id, never invented). `log_entry` on a thread that already has an entry writes nothing and returns it with `status: "exists"`. `update_entry` writes nothing, and leaves `updated_at` alone, when the result is identical to what's stored (`changed: false`). The skill looks the thread up first and only updates when the work has materially changed. Without a session id it falls back to matching today's entries for the project and asks before updating. `list_entries` takes `session_ref` and `platform` filters.
 
 Token usage is supplied by the agent. Entries flag it as `reported` or `estimated`, and reports show the split.

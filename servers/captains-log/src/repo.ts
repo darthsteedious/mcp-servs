@@ -36,6 +36,9 @@ export interface EntryInput {
   model?: string;
   session_ref?: string;
   project?: string;
+  workspace?: string;
+  repo?: string;
+  branch?: string;
   metadata?: Record<string, unknown>;
   issues?: IssueInput[];
   tags?: string[];
@@ -52,6 +55,7 @@ export interface Filters {
   tracker?: string;
   tag?: string;
   project?: string;
+  workspace?: string;
   session_ref?: string;
   platform?: string;
   limit?: number;
@@ -67,6 +71,25 @@ function stableStringify(v: unknown): string {
     return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(",")}}`;
   }
   return JSON.stringify(v) ?? "null";
+}
+
+/**
+ * Git remotes can embed credentials (https://TOKEN@host/..., https://user:pass@host/...).
+ * Strip them before they reach the DB, and drop query/fragment while at it.
+ */
+export function cleanRepo(r?: string): string | undefined {
+  const t = r?.trim();
+  if (!t) return undefined;
+  try {
+    const u = new URL(t);
+    u.password = "";
+    if (u.protocol === "http:" || u.protocol === "https:") u.username = "";
+    u.search = "";
+    u.hash = "";
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return t; // scp-style (git@host:owner/repo.git) or a plain name: no credentials to strip
+  }
 }
 
 class NoChange extends Error {}
@@ -151,7 +174,7 @@ export class Repo {
       if (existing) return { id: existing, created: false };
     }
     try {
-      return { id: this.insert({ ...e, platform }), created: true };
+      return { id: this.insert({ ...e, platform, repo: cleanRepo(e.repo) }), created: true };
     } catch (err) {
       // Lost a race with another connection logging the same thread.
       const existing = isUnique(err) && e.session_ref ? this.findBySession(platform, e.session_ref) : undefined;
@@ -167,13 +190,13 @@ export class Repo {
       this.db
         .prepare(
           `INSERT INTO entries(id, created_at, updated_at, occurred_on, title, summary, effort, outcome,
-             time_spent_min, time_saved_min, platform, model, session_ref, project, metadata)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+             time_spent_min, time_saved_min, platform, model, session_ref, project, workspace, repo, branch, metadata)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           id, now, now, e.occurred_on ?? today(), e.title, e.summary, e.effort ?? null, e.outcome ?? null,
           e.time_spent_min ?? null, e.time_saved_min ?? null, e.platform ?? null, e.model ?? null,
-          e.session_ref ?? null, e.project ?? null, e.metadata ? JSON.stringify(e.metadata) : null,
+          e.session_ref ?? null, e.project ?? null, e.workspace ?? null, e.repo ?? null, e.branch ?? null, e.metadata ? JSON.stringify(e.metadata) : null,
         );
       this.writeChildren(id, e, false);
       this.syncFts(id);
@@ -187,10 +210,12 @@ export class Repo {
    * `updated_at` untouched).
    */
   update(id: string, patch: EntryPatch): { found: boolean; changed: boolean } {
-    const p: EntryPatch = patch.platform === undefined ? patch : { ...patch, platform: normPlatform(patch.platform) };
+    const p: EntryPatch = { ...patch };
+    if (p.platform !== undefined) p.platform = normPlatform(p.platform);
+    if (p.repo !== undefined) p.repo = cleanRepo(p.repo);
     const scalar = [
       "occurred_on", "title", "summary", "effort", "outcome", "time_spent_min", "time_saved_min",
-      "platform", "model", "session_ref", "project",
+      "platform", "model", "session_ref", "project", "workspace", "repo", "branch",
     ] as const;
     try {
       return this.db.transaction(() => {
@@ -265,6 +290,7 @@ export class Repo {
     if (f.effort) { c.push(`${alias}.effort = ? COLLATE NOCASE`); p.push(f.effort); }
     if (f.session_ref) { c.push(`${alias}.session_ref = ?`); p.push(f.session_ref); }
     if (f.platform) { c.push(`COALESCE(${alias}.platform,'') = ?`); p.push(normPlatform(f.platform) ?? ""); }
+    if (f.workspace) { c.push(`(${alias}.workspace = ? OR ${alias}.repo = ? COLLATE NOCASE)`); p.push(f.workspace, cleanRepo(f.workspace) ?? f.workspace); }
     if (f.project) { c.push(`${alias}.project = ? COLLATE NOCASE`); p.push(f.project); }
     if (f.issue || f.tracker) {
       const q: string[] = [];
