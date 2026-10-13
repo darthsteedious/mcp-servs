@@ -1,11 +1,17 @@
 {
   "name": "mcp-servs",
   "private": true,
+  "license": "MIT",
   "type": "module",
-  "workspaces": ["packages/*", "servers/*"],
+  "workspaces": [
+    "packages/*",
+    "servers/*"
+  ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

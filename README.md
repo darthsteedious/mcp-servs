@@ -134,3 +134,7 @@ Both specs are days to weeks old, so this is a snapshot, not a verdict.
 - **OpenAI Decisions (`/v1/decisions`):** public beta since 2026-10-06, with one model (`gpt-6-luna`). It has OpenAI's reach. LM Studio, LiteLLM and promptfoo have added support, and LangSmith lists it as a separate route. I found no evidence yet of llama.cpp, Ollama or vLLM serving it.
 - **Net:** System One leads on implementations today, especially for local and open models. OpenAI's lead is distribution, and its shape is richer (arrays with names, labelled score probabilities, a refusal type). Using the OpenAI shape as the common format is a bet on where clients will go, and the translation layer means a wrong bet only costs a swap in one file.
 - **Caveats:** Almost every source is a young vendor or blog page. Star counts and "everywhere" claims are unverified.
+
+## License
+
+[MIT](LICENSE). Use it however you like.
