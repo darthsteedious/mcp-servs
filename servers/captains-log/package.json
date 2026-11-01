@@ -15,7 +15,7 @@
     "@mcp-servs/common": "*",
     "@modelcontextprotocol/sdk": "^1.20.0",
     "better-sqlite3": "^12.0.0",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
